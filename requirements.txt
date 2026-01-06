@@ -1,5 +1,5 @@
-streamlit
-requests
-pillow
-astropy
-geopy
+streamlit>=1.32
+requests>=2.31
+pillow>=10.0
+astropy>=6.0
+geopy>=2.4
