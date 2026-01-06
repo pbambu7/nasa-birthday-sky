@@ -15,7 +15,7 @@ st.set_page_config(
     layout="centered"
 )
 
-NASA_API_KEY = "PUT_YOUR_NASA_API_KEY_HERE"
+NASA_API_KEY = "VET2s7gsCNc08XfKMlmwmjahbu3pZ3ieocs2o5mk"
 
 # ---------------- UI ----------------
 st.title("🌌 What Was Above You When You Were Born?")
