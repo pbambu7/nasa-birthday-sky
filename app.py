@@ -3,6 +3,7 @@ import requests
 from datetime import date
 from PIL import Image, ImageDraw
 import io
+import os
 
 from astropy.time import Time
 from astropy.coordinates import EarthLocation, AltAz, get_body
@@ -15,7 +16,12 @@ st.set_page_config(
     layout="centered"
 )
 
-NASA_API_KEY = "VET2s7gsCNc08XfKMlmwmjahbu3pZ3ieocs2o5mk"
+# 🔐 Secure API key handling
+NASA_API_KEY = st.secrets.get("NASA_API_KEY") or os.getenv("NASA_API_KEY")
+
+if not NASA_API_KEY:
+    st.error("NASA API key not found. Please set NASA_API_KEY in Streamlit Secrets.")
+    st.stop()
 
 # ---------------- UI ----------------
 st.title("🌌 What Was Above You When You Were Born?")
@@ -25,15 +31,20 @@ birth_date = st.date_input("Your birth date", value=date(2000, 1, 1))
 birth_city = st.text_input("Birth city", placeholder="Salt Lake City")
 
 # ---------------- FUNCTIONS ----------------
+@st.cache_data(show_spinner=False)
 def fetch_apod(birth_date):
-    url = (
-        "https://api.nasa.gov/planetary/apod"
-        f"?date={birth_date}&api_key={NASA_API_KEY}"
-    )
-    return requests.get(url, timeout=20).json()
+    url = "https://api.nasa.gov/planetary/apod"
+    params = {
+        "date": birth_date.isoformat(),
+        "api_key": NASA_API_KEY
+    }
+    response = requests.get(url, params=params, timeout=20)
+    response.raise_for_status()
+    return response.json()
 
+@st.cache_data(show_spinner=False)
 def get_visible_planets(birth_date, city):
-    geolocator = Nominatim(user_agent="nasa_birth_app")
+    geolocator = Nominatim(user_agent="nasa_birthday_sky_app")
     location_data = geolocator.geocode(city)
 
     if not location_data:
@@ -63,6 +74,7 @@ def create_share_card(image_url, birth_date, city):
     img = img.resize((1080, 1080))
 
     draw = ImageDraw.Draw(img)
+
     overlay_height = 260
     draw.rectangle(
         [(0, 1080 - overlay_height), (1080, 1080)],
@@ -73,10 +85,10 @@ def create_share_card(image_url, birth_date, city):
         "What was above me when I was born?\n"
         f"{birth_date}\n"
         f"{city}\n"
-        "NASA Data"
+        "NASA Open Data"
     )
 
-    draw.text((50, 850), text, fill="white")
+    draw.text((50, 820), text, fill="white")
 
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
@@ -85,18 +97,21 @@ def create_share_card(image_url, birth_date, city):
 
 # ---------------- ACTION ----------------
 if st.button("🚀 Run my birthday"):
-    if not birth_city:
+    if not birth_city.strip():
         st.warning("Please enter a birth city.")
     else:
-        with st.spinner("Accessing NASA data..."):
-            apod = fetch_apod(birth_date)
+        try:
+            with st.spinner("Accessing NASA data..."):
+                apod = fetch_apod(birth_date)
 
-        if "url" not in apod:
-            st.error("NASA data not available for this date.")
-        else:
-            st.subheader(apod["title"])
-            st.image(apod["url"], use_column_width=True)
-            st.write(apod["explanation"])
+            st.subheader(apod.get("title", "NASA Astronomy Picture of the Day"))
+
+            if apod.get("media_type") == "image":
+                st.image(apod["url"], use_column_width=True)
+            else:
+                st.write("Media type is not an image for this date.")
+
+            st.write(apod.get("explanation", ""))
 
             planets = get_visible_planets(birth_date, birth_city)
 
@@ -114,3 +129,14 @@ if st.button("🚀 Run my birthday"):
                 file_name="my_birth_universe.png",
                 mime="image/png"
             )
+
+        except Exception as e:
+            st.error("Something went wrong while fetching NASA data.")
+            st.exception(e)
+
+# ---------------- FOOTER ----------------
+st.caption(
+    "Educational use only · Data from NASA Open APIs · "
+    "Not intended for navigation or astronomical planning\n\n"
+    "Built by Patience Bambu 🚀"
+)
