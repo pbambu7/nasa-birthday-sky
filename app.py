@@ -3,6 +3,7 @@ import requests
 from datetime import date
 from PIL import Image, ImageDraw
 import io
+import time
 
 from astropy.time import Time
 from astropy.coordinates import EarthLocation, AltAz, get_body
@@ -15,11 +16,10 @@ st.set_page_config(
     layout="centered"
 )
 
-# ---------------- API KEY (SECURE) ----------------
+# ---------------- API KEY ----------------
 NASA_API_KEY = st.secrets.get("NASA_API_KEY")
-
 if not NASA_API_KEY:
-    st.error("NASA API key not found. Please add it to Streamlit Secrets.")
+    st.error("NASA API key not found. Add it in Streamlit Secrets.")
     st.stop()
 
 # ---------------- UI ----------------
@@ -33,26 +33,32 @@ birth_city = st.text_input("Birth city", placeholder="Salt Lake City")
 @st.cache_data(show_spinner=False)
 def fetch_apod(birth_date):
     url = "https://api.nasa.gov/planetary/apod"
-    params = {
-        "date": birth_date,
-        "api_key": NASA_API_KEY
-    }
+    params = {"date": birth_date, "api_key": NASA_API_KEY}
 
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException:
-        return None
+    for _ in range(3):  # retry logic
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+
+            # Skip videos
+            if data.get("media_type") != "image":
+                return None
+
+            return data
+
+        except requests.exceptions.ReadTimeout:
+            time.sleep(1)
+        except requests.exceptions.RequestException:
+            return None
+
+    return None
 
 
 @st.cache_data(show_spinner=False)
 def get_visible_planets(birth_date, city):
     try:
-        geolocator = Nominatim(
-            user_agent="nasa-birthday-sky",
-            timeout=5
-        )
+        geolocator = Nominatim(user_agent="nasa-birthday-sky", timeout=5)
         location_data = geolocator.geocode(city)
     except Exception:
         return []
@@ -65,19 +71,19 @@ def get_visible_planets(birth_date, city):
         lon=location_data.longitude * u.deg
     )
 
-    time = Time(str(birth_date))
-    frame = AltAz(obstime=time, location=location)
+    time_obs = Time(str(birth_date))
+    frame = AltAz(obstime=time_obs, location=location)
 
     planets = ["mars", "venus", "jupiter"]
     visible = []
 
     for planet in planets:
         try:
-            body = get_body(planet, time).transform_to(frame)
+            body = get_body(planet, time_obs).transform_to(frame)
             if body.alt > 0 * u.deg:
                 visible.append(planet.capitalize())
         except Exception:
-            continue
+            pass
 
     return visible
 
@@ -88,30 +94,29 @@ def create_share_card(image_url, birth_date, city):
     except Exception:
         return None
 
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    img = img.resize((1080, 1080))
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except Exception:
+        return None
 
+    img = img.resize((1080, 1080))
     draw = ImageDraw.Draw(img)
 
-    overlay_height = 260
-    draw.rectangle(
-        [(0, 1080 - overlay_height), (1080, 1080)],
-        fill=(0, 0, 0)
-    )
+    draw.rectangle([(0, 820), (1080, 1080)], fill=(0, 0, 0))
 
     text = (
         "What was above me when I was born?\n"
         f"{birth_date}\n"
         f"{city}\n"
-        "NASA Data"
+        "NASA Open Data"
     )
 
-    draw.text((50, 850), text, fill="white")
+    draw.text((40, 860), text, fill="white")
 
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 # ---------------- ACTION ----------------
 if st.button("🚀 Run my birthday"):
@@ -122,8 +127,11 @@ if st.button("🚀 Run my birthday"):
     with st.spinner("Accessing NASA data..."):
         apod = fetch_apod(birth_date)
 
-    if not apod or "url" not in apod:
-        st.error("NASA data could not be retrieved right now. Please try again.")
+    if not apod:
+        st.error(
+            "NASA image unavailable for this date (video or timeout).\n"
+            "Try a nearby date."
+        )
         st.stop()
 
     st.subheader(apod.get("title", "NASA Astronomy Picture"))
