@@ -1,44 +1,38 @@
 🌌 NASA Birthday Sky
 What did the sky look like on the day you were born?
-NASA Birthday Sky is a simple interactive app that lets anyone enter their birthdate and location to see which planets (Mars, Venus, Jupiter) were visible in the sky at that moment — using real NASA data.
-Built to make space science personal, visual, and shareable.
+NASA Birthday Sky is an interactive web app that lets anyone enter their birthdate and location to discover which major planets — Mars, Venus, and Jupiter — were visible in the sky at that moment, using real NASA open data and astronomy calculations.
+The goal is simple: make space science personal, visual, and shareable.
 🚀 Features
-🌍 Location-based sky accuracy
-📅 Birthdate input (run your birthday)
-🪐 Planet visibility (Mars, Venus, Jupiter)
+🌍 Location-based sky accuracy using real geographic coordinates
+📅 Birthdate input — run your birthday in seconds
+🪐 Planet visibility detection (Mars, Venus, Jupiter)
 🖼️ Shareable, IG-ready sky image
-🔬 Powered by official NASA APIs
-🧠 Why this project
-I was inspired by seeing how AI and open science can unlock discovery — not just for researchers, but for everyday people.
-This project explores how public NASA data can be turned into an experience that’s:
+🔬 Powered by official NASA Open APIs
+🧯 Resilient design — app remains usable even during NASA API outages
+🧠 Why This Project
+NASA’s open data is incredibly powerful, but often inaccessible to people without a technical background.
+This project explores how open science, combined with thoughtful engineering and design, can turn raw scientific data into an experience that is:
 Educational
 Personal
 Visually engaging
-Built with a focus on clarity, accuracy, and execution.
+Built with a focus on clarity, accuracy, resilience, and execution, NASA Birthday Sky is designed for public engagement — not just research labs.
 🛠️ Tech Stack
 Python
 Streamlit
-NASA APIs
-Astropy
-Geopy
-Pillow
+NASA Open APIs (APOD)
+Astropy — astronomical calculations
+Geopy — location → coordinates
+Pillow — image generation & share cards
 🔐 API Key Setup
-This app uses a NASA API key.
-If running locally:
-Get a free key from: https://api.nasa.gov
-Set it as an environment variable:
+This app requires a NASA API key.
+Get a free key:
+👉 https://api.nasa.gov
+Run locally:
 export NASA_API_KEY=your_api_key_here
-Streamlit Cloud users should add the key under Secrets:
-NASA_API_KEY = your_api_key_here
+Streamlit Cloud:
+Add the key under App Settings → Secrets:
+NASA_API_KEY = "your_api_key_here"
+
 ▶️ Run Locally
 pip install -r requirements.txt
 streamlit run app.py
-🌍 Live Demo
-👉 https://nasa-birthday-sky.streamlit.app (once deployed)
-📌 Notes
-This project focuses on planets, not asteroids (yet)
-Designed for public sharing and accessibility
-Educational use — not intended for navigation or observation planning
-🙌 Credits
-Data provided by NASA Open APIs
-Built by Patience Bambu
