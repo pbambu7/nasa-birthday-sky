@@ -1,8 +1,14 @@
 import io
+import csv
 import math
 import time
 import random
+import textwrap
 from datetime import date, datetime, time as dtime
+
+from reportlab.lib.pagesizes import LETTER
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
 
 import streamlit as st
 import requests
@@ -36,6 +42,23 @@ st.markdown(
 .stButton>button { width:100%; padding:14px; border-radius:14px; font-size:16px; }
 small.muted { color: rgba(255,255,255,0.65); }
 hr { margin: 1.25rem 0; }
+.card {
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
+  border-radius: 16px;
+  padding: 16px;
+}
+.card h4 { margin: 0 0 6px 0; }
+.card p { margin: 0; color: rgba(255,255,255,0.82); }
+.badge {
+  display:inline-block;
+  padding: 4px 10px;
+  border-radius:999px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  font-size: 12px;
+  margin-right: 8px;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -43,6 +66,14 @@ hr { margin: 1.25rem 0; }
 
 NASA_API_KEY = st.secrets.get("NASA_API_KEY")
 APP_BASE_URL = st.secrets.get("APP_BASE_URL", "").strip()
+
+# Optional: star catalog citation source text (you can set this in Secrets)
+# Example:
+# STAR_CATALOG_SOURCE = "Bright stars subset (RA/Dec) compiled for demo use; recommend Hipparcos/Tycho-2 for production."
+STAR_CATALOG_SOURCE = st.secrets.get(
+    "STAR_CATALOG_SOURCE",
+    "Embedded bright-star subset (RA/Dec). For production-grade catalogs, use Hipparcos / Tycho-2 or Gaia DR3."
+)
 
 if not NASA_API_KEY:
     st.error('NASA API key missing. Add it in Streamlit → App settings → Secrets:\n\nNASA_API_KEY = "YOUR_KEY"')
@@ -55,9 +86,8 @@ st.caption("Personal astronomy using NASA open data + real sky calculations (tim
 # =========================
 # LIGHTWEIGHT "REAL STAR CATALOG" (BRIGHT STAR SUBSET)
 # =========================
-# NOTE: This is a compact embedded subset (bright stars) with real RA/Dec coordinates.
-# It’s “real catalog data” in the sense that these are actual star coordinates,
-# but it’s intentionally small so it runs fast + reliably on Streamlit Cloud.
+# NOTE: Compact embedded subset with real RA/Dec degrees.
+# Designed for reliability on Streamlit Cloud.
 BRIGHT_STARS = {
     # Orion region
     "Betelgeuse": (88.7929, 7.4071),
@@ -126,12 +156,36 @@ CONSTELLATION_LINES = {
     ],
 }
 
+# =========================
+# STAR CATALOG LOADER (OPTIONAL CSV)
+# =========================
+def load_star_catalog(path="data/bright_stars.csv", max_rows=1500):
+    """
+    Optional CSV catalog loader.
+    Expected columns: name, ra, dec, mag (mag optional)
+    RA/DEC in degrees.
+    """
+    stars = []
+    try:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader):
+                if i >= max_rows:
+                    break
+                ra = float(row["ra"])
+                dec = float(row["dec"])
+                name = row.get("name", "").strip() or f"Star {i+1}"
+                mag = float(row.get("mag", 0)) if row.get("mag") not in (None, "") else 0.0
+                stars.append({"name": name, "ra": ra, "dec": dec, "mag": mag})
+    except Exception:
+        return []
+    return stars
+
 
 # =========================
 # QUERY PARAMS (SHARE LINKS)
 # =========================
 def get_query_params():
-    # Streamlit has moved APIs across versions; support both.
     try:
         return dict(st.query_params)
     except Exception:
@@ -164,16 +218,15 @@ def parse_hhmm(s, fallback_time=dtime(0, 0)):
     except Exception:
         return fallback_time
 
-
 default_birth_date = parse_iso_date(qp_get("date", "2000-01-01"), date(2000, 1, 1))
 default_city = qp_get("city", "")
-default_mode = qp_get("mode", "midnight").lower()  # midnight/noon/exact
+default_mode = qp_get("mode", "midnight").lower()
 default_time = parse_hhmm(qp_get("time", "00:00"), dtime(0, 0))
 default_autorun = str(qp_get("autorun", "0")) == "1"
 
 
 # =========================
-# UI INPUTS (MOBILE-FRIENDLY)
+# UI INPUTS
 # =========================
 top1, top2 = st.columns(2)
 with top1:
@@ -181,11 +234,7 @@ with top1:
 with top2:
     birth_city = st.text_input("Birth city", value=default_city, placeholder="Salt Lake City, UT")
 
-mode_labels = {
-    "midnight": "Midnight (00:00)",
-    "noon": "Noon (12:00)",
-    "exact": "Exact time",
-}
+mode_labels = {"midnight": "Midnight (00:00)", "noon": "Noon (12:00)", "exact": "Exact time"}
 mode_options = ["Midnight (00:00)", "Noon (12:00)", "Exact time"]
 default_mode_label = mode_labels.get(default_mode, "Midnight (00:00)")
 
@@ -197,9 +246,12 @@ if moment.startswith("Midnight"):
 elif moment.startswith("Noon"):
     birth_time = dtime(12, 0)
 else:
-    birth_time = st.time_input("Exact birth time (optional)", value=default_time)
+    birth_time = st.time_input("Exact birth time (HH:MM) — optional", value=default_time)
 
-educator_mode = st.toggle("🧪 Educator Mode (explain the science)", value=False)
+educator_mode = st.toggle("🧪 Educator Mode (guided lesson + explain the science)", value=False)
+
+# Optional “catalog mode” switch (still lightweight unless you add CSV)
+use_csv_catalog = st.toggle("🔭 Real star catalog mode (CSV if available)", value=False)
 
 st.divider()
 
@@ -239,7 +291,6 @@ def fetch_apod(date_iso: str, api_key: str):
     url = "https://api.nasa.gov/planetary/apod"
     params = {"date": date_iso, "api_key": api_key}
 
-    # Robust retries for degraded APOD
     for attempt in range(4):
         try:
             r = requests.get(url, params=params, timeout=(4, 10))
@@ -253,7 +304,7 @@ def fetch_apod(date_iso: str, api_key: str):
 
 
 # =========================
-# ASTRONOMY: PLANETS + MOON
+# ASTRONOMY: PLANETS + MOON + STARS
 # =========================
 def compute_visible_planets(location: EarthLocation, obs_time: Time):
     frame = AltAz(obstime=obs_time, location=location)
@@ -275,28 +326,17 @@ def compute_visible_planets(location: EarthLocation, obs_time: Time):
 
 
 def compute_moon_phase(obs_time: Time):
-    """
-    Returns:
-    - illumination fraction (0..1)
-    - phase name (string)
-    - waxing bool
-    Uses Sun–Moon elongation in the sky:
-      k = (1 - cos(D)) / 2
-    """
     moon = get_body("moon", obs_time)
     sun = get_body("sun", obs_time)
 
-    # Angular separation (elongation) as seen from Earth
-    D = moon.separation(sun).to(u.rad).value  # radians
-    illum = (1 - math.cos(D)) / 2  # 0 new -> 1 full
+    D = moon.separation(sun).to(u.rad).value
+    illum = (1 - math.cos(D)) / 2
 
-    # Waxing/waning: compare ecliptic longitudes
     moon_ecl = moon.transform_to(BarycentricTrueEcliptic(obstime=obs_time))
     sun_ecl = sun.transform_to(BarycentricTrueEcliptic(obstime=obs_time))
     dlon = (moon_ecl.lon - sun_ecl.lon).wrap_at(360 * u.deg).to(u.deg).value
     waxing = dlon > 0
 
-    # Phase name
     pct = illum * 100
     if pct < 2:
         name = "New Moon"
@@ -312,69 +352,253 @@ def compute_moon_phase(obs_time: Time):
     return float(illum), name, waxing
 
 
-# =========================
-# VISUALS: SKY + CONSTELLATIONS + PLANETS
-# =========================
-def altaz_to_xy(alt_deg, az_deg, w, h):
-    """
-    Simple projection:
-    - x based on azimuth 0..360
-    - y based on altitude 0..90 (top)
-    """
-    x = int((az_deg / 360.0) * w)
-    # keep horizon near bottom; clamp alt for view
-    alt_clamped = max(0.0, min(90.0, float(alt_deg)))
-    y = int(h - (alt_clamped / 90.0) * (h * 0.85) - (h * 0.05))
-    return x, y
-
-
-def draw_glow(draw, x, y, base_radius=4, glow_radius=14, color=(255, 215, 0)):
-    # glow
-    for r in range(glow_radius, base_radius, -2):
-        alpha = int(18 * (r / glow_radius))
-        # simulate alpha by blending toward black (simple hack)
-        c = tuple(int(color[i] * (alpha / 255)) for i in range(3))
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=c)
-    # core
-    draw.ellipse((x - base_radius, y - base_radius, x + base_radius, y + base_radius), fill=color)
-
-
 def project_star_to_altaz(star_ra_deg, star_dec_deg, obs_time: Time, location: EarthLocation):
     sc = SkyCoord(ra=star_ra_deg * u.deg, dec=star_dec_deg * u.deg, frame="icrs")
     altaz = sc.transform_to(AltAz(obstime=obs_time, location=location))
     return altaz.alt.to(u.deg).value, altaz.az.to(u.deg).value
 
 
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def compute_visible_stars_embedded(obs_time_iso: str, lat: float, lon: float):
+    """
+    Visible stars from embedded BRIGHT_STARS.
+    Cached by time+location.
+    """
+    obs_time = Time(obs_time_iso)
+    location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg)
+
+    visible = []
+    for name, (ra, dec) in BRIGHT_STARS.items():
+        alt, az = project_star_to_altaz(ra, dec, obs_time, location)
+        if alt > 0:
+            visible.append({"name": name, "ra": ra, "dec": dec, "alt": float(alt), "az": float(az), "mag": 0.0})
+    visible.sort(key=lambda s: s["alt"], reverse=True)
+    return visible
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def compute_visible_stars_csv(obs_time_iso: str, lat: float, lon: float, max_stars=900):
+    """
+    Visible stars from optional CSV catalog.
+    If no CSV exists, returns [].
+    Cached by time+location.
+    """
+    catalog = load_star_catalog("data/bright_stars.csv", max_rows=1500)
+    if not catalog:
+        return []
+
+    obs_time = Time(obs_time_iso)
+    location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg)
+
+    visible = []
+    # Limit to keep Streamlit snappy
+    for star in catalog[:max_stars]:
+        try:
+            alt, az = project_star_to_altaz(star["ra"], star["dec"], obs_time, location)
+            if alt > 0:
+                visible.append({
+                    "name": star["name"],
+                    "ra": float(star["ra"]),
+                    "dec": float(star["dec"]),
+                    "mag": float(star.get("mag", 0.0)),
+                    "alt": float(alt),
+                    "az": float(az),
+                })
+        except Exception:
+            continue
+
+    visible.sort(key=lambda s: s["alt"], reverse=True)
+    return visible
+
+
+# =========================
+# SCIENCE REPORT (PDF EXPORT) — WITH AUTO CITATIONS
+# =========================
+def _pdf_wrapped_text(c, x, y, text, max_width_chars=95, line_height=14):
+    for line in textwrap.wrap(text, width=max_width_chars):
+        c.drawString(x, y, line)
+        y -= line_height
+    return y
+
+
+def generate_science_report_buffer(
+    birth_date,
+    city,
+    lat,
+    lon,
+    timezone,
+    utc_dt,
+    planets,
+    moon_text,
+    repro_link,
+    apod_status_text,
+    stars_used,
+    star_source_text,
+):
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    width, height = LETTER
+
+    y = height - 1 * inch
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(1 * inch, y, "NASA Birthday Sky — Science Report")
+
+    y -= 0.5 * inch
+    c.setFont("Helvetica", 11)
+    c.drawString(1 * inch, y, f"Generated: {datetime.utcnow().isoformat()} UTC")
+
+    # Inputs
+    y -= 0.55 * inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(1 * inch, y, "Inputs")
+
+    y -= 0.3 * inch
+    c.setFont("Helvetica", 11)
+    c.drawString(1 * inch, y, f"Birth date: {birth_date}")
+    y -= 0.25 * inch
+    c.drawString(1 * inch, y, f"City: {city}")
+    y -= 0.25 * inch
+    c.drawString(1 * inch, y, f"Lat/Lon: {lat:.4f}, {lon:.4f}")
+    y -= 0.25 * inch
+    c.drawString(1 * inch, y, f"Timezone: {timezone}")
+    y -= 0.25 * inch
+    c.drawString(1 * inch, y, f"UTC time used: {utc_dt}")
+
+    # Results
+    y -= 0.4 * inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(1 * inch, y, "Results")
+
+    y -= 0.3 * inch
+    c.setFont("Helvetica", 11)
+    c.drawString(1 * inch, y, f"Moon: {moon_text}")
+
+    for p in planets:
+        y -= 0.25 * inch
+        c.drawString(1 * inch, y, f"{p['name']} — alt {p['alt']:.2f}°, az {p['az']:.2f}°")
+
+    # Stars summary (auto)
+    y -= 0.45 * inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(1 * inch, y, "Stars Used (for sky/constellation overlay)")
+
+    y -= 0.3 * inch
+    c.setFont("Helvetica", 11)
+    c.drawString(1 * inch, y, f"Visible stars (sample): {min(len(stars_used), 12)} of {len(stars_used)}")
+
+    sample = stars_used[:12]
+    for s in sample:
+        y -= 0.22 * inch
+        c.drawString(
+            1 * inch,
+            y,
+            f"{s['name']} — alt {s['alt']:.1f}°, az {s['az']:.1f}° (RA {s['ra']:.2f}°, Dec {s['dec']:.2f}°)",
+        )
+
+    # APOD status
+    y -= 0.45 * inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(1 * inch, y, "NASA APOD Status")
+
+    y -= 0.3 * inch
+    c.setFont("Helvetica", 11)
+    y = _pdf_wrapped_text(c, 1 * inch, y, apod_status_text, max_width_chars=95, line_height=14)
+
+    # Repro
+    y -= 0.35 * inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(1 * inch, y, "Reproducibility Link")
+
+    y -= 0.3 * inch
+    c.setFont("Helvetica", 11)
+    y = _pdf_wrapped_text(c, 1 * inch, y, repro_link, max_width_chars=95, line_height=14)
+
+    # Citations (auto embed)
+    y -= 0.35 * inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(1 * inch, y, "Citations / Data Sources")
+
+    y -= 0.3 * inch
+    c.setFont("Helvetica", 11)
+    citations = [
+        "NASA Open APIs — APOD (Astronomy Picture of the Day) and related services: https://api.nasa.gov",
+        "Astropy — astronomical coordinate transforms and ephemerides: https://www.astropy.org",
+        f"Star catalog source: {star_source_text}",
+        "Geocoding: OpenStreetMap Nominatim (Geopy client).",
+        "Timezone lookup: timezonefinder + pytz.",
+    ]
+    for item in citations:
+        y = _pdf_wrapped_text(c, 1 * inch, y, f"• {item}", max_width_chars=95, line_height=14)
+        y -= 2
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf
+
+
+# =========================
+# VISUALS: SKY + CONSTELLATIONS + PLANETS
+# =========================
+def altaz_to_xy(alt_deg, az_deg, w, h):
+    x = int((az_deg / 360.0) * w)
+    alt_clamped = max(0.0, min(90.0, float(alt_deg)))
+    y = int(h - (alt_clamped / 90.0) * (h * 0.85) - (h * 0.05))
+    return x, y
+
+
+def draw_glow(draw, x, y, base_radius=4, glow_radius=14, color=(255, 215, 0)):
+    for r in range(glow_radius, base_radius, -2):
+        alpha = int(18 * (r / glow_radius))
+        c = tuple(int(color[i] * (alpha / 255)) for i in range(3))
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=c)
+    draw.ellipse((x - base_radius, y - base_radius, x + base_radius, y + base_radius), fill=color)
+
+
 def generate_sky_image(
     obs_time: Time,
     location: EarthLocation,
     visible_planets,
+    visible_stars,
     show_constellations=True,
     caption_text="Simulated night sky based on your birth location",
+    badge_text="",
 ):
     W, H = 1080, 620
     img = Image.new("RGB", (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # starfield background (random but stable-ish per day)
+    # Base starfield (aesthetic filler)
     seed = int(obs_time.jd * 10) % 10_000_000
     rng = random.Random(seed)
-
-    # stars
-    for _ in range(1400):
+    for _ in range(1200):
         x = rng.randint(0, W - 1)
         y = rng.randint(0, H - 1)
-        b = int(80 + (rng.random() ** 0.4) * 175)
+        b = int(70 + (rng.random() ** 0.4) * 185)
         r = 1 if rng.random() < 0.95 else 2
         draw.ellipse((x - r, y - r, x + r, y + r), fill=(b, b, b))
 
-    # constellations
+    # Overlay real visible star points (intentional “catalog vibe”)
+    # Brighter stars (higher altitude) get slightly larger
+    if visible_stars:
+        for s in visible_stars[:220]:  # cap for speed/clarity
+            x, y = altaz_to_xy(s["alt"], s["az"], W, H)
+            r = 1 if s["alt"] < 20 else 2
+            b = 210 if s["alt"] > 45 else 180
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=(b, b, b))
+
+        # Label a few highest-altitude stars (subtle)
+        label_color = (160, 190, 255)
+        for s in visible_stars[:6]:
+            x, y = altaz_to_xy(s["alt"], s["az"], W, H)
+            draw.text((x + 8, y - 10), s["name"], fill=label_color)
+
+    # Constellations (from embedded set)
     if show_constellations:
-        line_color = (90, 140, 255)  # subtle
+        line_color = (90, 140, 255)
         label_color = (150, 180, 255)
 
         for cname, segs in CONSTELLATION_LINES.items():
-            # draw each segment if both stars are above horizon
             for a, b in segs:
                 if a not in BRIGHT_STARS or b not in BRIGHT_STARS:
                     continue
@@ -392,7 +616,6 @@ def generate_sky_image(
                 bx, by = altaz_to_xy(b_alt, b_az, W, H)
                 draw.line((ax, ay, bx, by), fill=line_color, width=1)
 
-            # label: pick first star in first segment if visible
             first_seg = segs[0] if segs else None
             if first_seg:
                 sname = first_seg[0]
@@ -403,17 +626,22 @@ def generate_sky_image(
                         x, y = altaz_to_xy(alt, az, W, H)
                         draw.text((x + 8, y - 12), cname, fill=label_color)
 
-    # planets markers
+    # Planet markers
     for p in visible_planets:
         x, y = altaz_to_xy(p["alt"], p["az"], W, H)
         draw_glow(draw, x, y, base_radius=4, glow_radius=16, color=(255, 215, 0))
         draw.text((x + 10, y - 10), p["name"], fill=(255, 255, 255))
 
-    # bottom overlay caption (Apple/NASA feel)
+    # Bottom overlay caption (designed, intentional)
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     o = ImageDraw.Draw(overlay)
-    o.rectangle((0, H - 80, W, H), fill=(0, 0, 0, 160))
-    o.text((24, H - 58), caption_text, fill=(255, 255, 255))
+    o.rectangle((0, H - 86, W, H), fill=(0, 0, 0, 170))
+
+    # “badge”
+    if badge_text:
+        o.text((24, H - 78), badge_text, fill=(255, 220, 140))
+
+    o.text((24, H - 54), caption_text, fill=(255, 255, 255))
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
     return img
@@ -421,12 +649,8 @@ def generate_sky_image(
 
 def create_share_card_ig(base_img: Image.Image, birth_date: date, city: str, moment_label: str, tz_name: str,
                          planets_text: str, moon_text: str):
-    # 1080 x 1080
     img = base_img.convert("RGB")
-
-    # make square (center crop or pad)
     if img.width != img.height:
-        # center-crop to square
         side = min(img.width, img.height)
         left = (img.width - side) // 2
         top = (img.height - side) // 2
@@ -436,7 +660,6 @@ def create_share_card_ig(base_img: Image.Image, birth_date: date, city: str, mom
     draw = ImageDraw.Draw(img)
     draw.rectangle((0, 760, 1080, 1080), fill=(0, 0, 0))
 
-    # fonts (fallback safe)
     try:
         font_big = ImageFont.truetype("DejaVuSans.ttf", 44)
         font_mid = ImageFont.truetype("DejaVuSans.ttf", 30)
@@ -466,11 +689,67 @@ def build_share_url(birth_date: date, city: str, mode_key: str, time_hhmm: str):
 
 
 # =========================
+# EDUCATOR MODE LESSON CARDS
+# =========================
+def render_educator_cards(tz_name: str):
+    st.markdown("### 🧑🏽‍🏫 Educator Mode — Guided Lesson Cards")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            """
+<div class="card">
+  <span class="badge">Activity 1</span>
+  <h4>Horizon Test (Altitude)</h4>
+  <p>Rule: <b>Altitude &gt; 0°</b> means “above the horizon” (visible).</p>
+  <p>Ask: Which planet has the highest altitude? What would you expect to see first after sunset?</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+<div class="card" style="margin-top:12px;">
+  <span class="badge">Activity 3</span>
+  <h4>Direction Lab (Azimuth)</h4>
+  <p>Azimuth is direction: 0°=N, 90°=E, 180°=S, 270°=W.</p>
+  <p>Ask: If azimuth is 285°, what compass direction is that?</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        st.markdown(
+            """
+<div class="card">
+  <span class="badge">Activity 2</span>
+  <h4>Moon Phase + Illumination</h4>
+  <p>We estimate illumination from Sun–Moon separation.</p>
+  <p>Ask: How does the moon’s appearance change as illumination increases?</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+<div class="card" style="margin-top:12px;">
+  <span class="badge">Challenge</span>
+  <h4>Timezone Reality Check</h4>
+  <p>Your city uses <b>{tz_name}</b>. Re-run the same date with <b>Noon</b> vs <b>Midnight</b>.</p>
+  <p>Ask: Do planet altitudes change? Why?</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+    st.caption("Tip: Have students compare two cities on the same date/time and explain differences using latitude + timezone.")
+
+
+# =========================
 # RUN ACTION
 # =========================
 run_clicked = st.button("🚀 Run my birthday")
-should_autorun = default_autorun
-should_run = run_clicked or should_autorun
+should_run = run_clicked or default_autorun
 
 if should_run:
     if not birth_city.strip():
@@ -487,7 +766,6 @@ if should_run:
     lat, lon, resolved_address = geo
     location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg)
 
-    # mode key
     if moment.startswith("Midnight"):
         mode_key = "midnight"
         moment_label = "Midnight"
@@ -516,7 +794,19 @@ if should_run:
     moon_pct = int(round(moon_illum * 100))
     moon_text = f"{moon_phase_name} • {moon_pct}% lit"
 
-    # nice animated planet sweep
+    # Stars: embedded or CSV
+    obs_time_iso = utc_dt.isoformat()
+    if use_csv_catalog:
+        visible_stars = compute_visible_stars_csv(obs_time_iso, lat, lon)
+        star_source_used = "CSV catalog: data/bright_stars.csv (local file), transformed to Alt/Az via Astropy."
+        if not visible_stars:
+            visible_stars = compute_visible_stars_embedded(obs_time_iso, lat, lon)
+            star_source_used = "Embedded bright-star subset (fallback)."
+    else:
+        visible_stars = compute_visible_stars_embedded(obs_time_iso, lat, lon)
+        star_source_used = "Embedded bright-star subset."
+
+    # Planet “animation sweep” (nice vibe)
     st.subheader("🪐 Planets visible above the horizon")
     if visible_planets:
         ph = st.empty()
@@ -524,16 +814,16 @@ if should_run:
         for p in visible_planets:
             lines.append(f"**{p['name']}** — altitude **{p['alt']:.1f}°**, azimuth **{p['az']:.1f}°**")
             ph.markdown("\n\n".join(lines))
-            time.sleep(0.35)
+            time.sleep(0.25)
     else:
         st.write("No major planets were above the horizon at that moment (Mars/Venus/Jupiter list).")
 
     st.subheader("🌕 Moon")
     st.write(f"**{moon_phase_name}** — **{moon_pct}%** illuminated")
 
-    # Educator mode explanation
+    # Educator mode: explain + lesson cards
     if educator_mode:
-        with st.expander("🧪 How the calculations work (Educator Mode)", expanded=True):
+        with st.expander("🧪 Educator Mode — explanation + lesson plan", expanded=True):
             st.markdown(
                 f"""
 **1) Location → Coordinates**  
@@ -551,13 +841,9 @@ Altitude tells how high an object is above the horizon:
 **4) Azimuth is direction**  
 Azimuth is a compass direction in degrees:
 - 0° = North, 90° = East, 180° = South, 270° = West
-
-**5) Moon illumination**  
-We compute Sun–Moon separation and estimate illumination:
-- New Moon ≈ 0%
-- Full Moon ≈ 100%
 """
             )
+            render_educator_cards(tz_name)
 
     # NASA APOD (optional; may be degraded)
     with st.spinner("Fetching NASA APOD (may be degraded during outages)..."):
@@ -594,17 +880,30 @@ We compute Sun–Moon separation and estimate illumination:
             with st.expander("APOD explanation"):
                 st.write(apod_expl)
         visual_for_card = apod_img
+        apod_status_text = "APOD loaded successfully (NASA APOD image used)."
+        badge_text = ""
+        caption_text = "NASA APOD image (official NASA Open API)"
     else:
-        st.warning("🚨 NASA APOD is temporarily unavailable. Showing a simulated sky visualization (planets remain accurate).")
+        # Intentional, designed fallback messaging
+        st.warning("🛑 NASA APOD is temporarily unavailable (NASA shows a service outage). Planetary calculations are still accurate.")
+        badge_text = "APOD temporarily unavailable — simulated sky remains accurate"
+        caption_text = "Simulated night sky based on your birth location (planets + moon are real calculations)"
         sky_img = generate_sky_image(
             obs_time=obs_time,
             location=location,
             visible_planets=visible_planets,
+            visible_stars=visible_stars,
             show_constellations=True,
-            caption_text="Simulated night sky based on your birth location",
+            caption_text=caption_text,
+            badge_text=badge_text,
         )
-        st.image(sky_img, use_container_width=True, caption="Simulated night sky based on your birth location")
+        st.image(
+            sky_img,
+            use_container_width=True,
+            caption="Simulated night sky based on your birth location (with constellation overlays)",
+        )
         visual_for_card = sky_img
+        apod_status_text = "APOD unavailable at runtime; app displayed simulated sky visualization while preserving planet/moon calculations."
 
     # Share link + download card
     planets_text = ", ".join([p["name"] for p in visible_planets]) if visible_planets else "None"
@@ -631,6 +930,30 @@ We compute Sun–Moon separation and estimate illumination:
         data=card_buf,
         file_name="nasa_birthday_sky.png",
         mime="image/png",
+        use_container_width=True,
+    )
+
+    # ✅ NEW: Science Report PDF export with citations + repro link
+    st.subheader("📄 Export Science Report (PDF)")
+    pdf_buf = generate_science_report_buffer(
+        birth_date=birth_date.isoformat(),
+        city=birth_city,
+        lat=lat,
+        lon=lon,
+        timezone=tz_name,
+        utc_dt=utc_dt.isoformat(),
+        planets=visible_planets,
+        moon_text=moon_text,
+        repro_link=share_url,
+        apod_status_text=apod_status_text,
+        stars_used=visible_stars,
+        star_source_text=f"{STAR_CATALOG_SOURCE} | {star_source_used}",
+    )
+    st.download_button(
+        "Download PDF Report",
+        data=pdf_buf,
+        file_name="nasa_birthday_sky_science_report.pdf",
+        mime="application/pdf",
         use_container_width=True,
     )
 
