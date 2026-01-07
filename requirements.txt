@@ -1,5 +1,7 @@
-streamlit>=1.32
-requests>=2.31
-pillow>=10.0
-astropy>=6.0
-geopy>=2.4
+streamlit
+requests
+pillow
+astropy
+geopy
+pytz
+timezonefinder
