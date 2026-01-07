@@ -1,0 +1,26 @@
+from astroquery.gaia import Gaia
+import pandas as pd
+
+query = """
+SELECT
+  source_id,
+  ra,
+  dec,
+  phot_g_mean_mag
+FROM gaiadr3.gaia_source
+WHERE phot_g_mean_mag < 6
+"""
+
+job = Gaia.launch_job_async(query)
+df = job.get_results().to_pandas()
+
+df.rename(columns={
+    "ra": "ra",
+    "dec": "dec",
+    "phot_g_mean_mag": "mag"
+}, inplace=True)
+
+df["name"] = "Gaia DR3 " + df.index.astype(str)
+df = df[["name", "ra", "dec", "mag"]]
+
+df.to_csv("gaia_dr3_bright.csv", index=False)
