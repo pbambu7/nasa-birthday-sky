@@ -1,19 +1,5 @@
 # app.py — NASA Birthday Sky (Streamlit)
 # ------------------------------------------------------------
-# ✅ Upgrades included:
-# - Educator Mode: full lesson cards + mini-quiz + glossary
-# - Star catalogs: Embedded subset + Optional CSV catalog (data/bright_stars.csv)
-# - CSV builder: one-click generate data/bright_stars.csv from embedded stars
-# - Star rendering: LOD caps + magnitude scaling (if mag exists)
-# - APOD: image support + graceful fallback when APOD is down or video
-# - Science PDF: multi-page, auto-numbered citations, catalog citations, repro link
-# - Share links via query params (date/city/mode/time/autorun)
-#
-# 📌 Secrets expected:
-# NASA_API_KEY="YOUR_KEY"
-# APP_BASE_URL="https://your-streamlit-app-url"
-# STAR_CATALOG_SOURCE="(optional custom text shown in PDF citations)"
-# ------------------------------------------------------------
 
 import io
 import os
