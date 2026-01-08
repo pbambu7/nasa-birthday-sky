@@ -83,9 +83,10 @@ hr { margin: 1.25rem 0; }
 NASA_API_KEY = st.secrets.get("NASA_API_KEY")
 APP_BASE_URL = st.secrets.get("APP_BASE_URL", "").strip()
 
-STAR_CATALOG_SOURCE = st.secrets.get(
-    "STAR_CATALOG_SOURCE",
-    "Embedded bright-star subset (RA/Dec). For production-grade catalogs, use Hipparcos / Tycho-2 or Gaia DR3.",
+STAR_CATALOG_SOURCE = (
+    "Gaia Collaboration et al., Gaia Data Release 3 (DR3), "
+    "European Space Agency (ESA), 2022. "
+    "https://gea.esac.esa.int/archive/"
 )
 
 DATA_DIR = Path("data")
